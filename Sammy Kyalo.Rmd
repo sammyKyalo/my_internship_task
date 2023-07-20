@@ -1,0 +1,195 @@
+---
+title: "CEMA Internship Task"
+author: "Sammy Kyalo"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown:
+      df_print: paged
+      number_sections: true
+      code_folding: show
+      toc_float: true
+      keep_md: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Environment set up
+```{r}
+# Avoid printing of numbers in scientific format
+options(scipen = 999)
+
+# Required Packages
+pacman::p_load(tidyverse, janitor, dlookr, naniar, plotly, timetk, trelliscopejs)
+
+# Loading data 
+cema <- read_csv("data/cema_internship_task_2023.csv", show_col_types = F)
+
+# Set default plotting theme
+theme_set(theme_minimal())
+```
+
+# Some Data cleaning
+```{r}
+cema_clean <- cema %>% 
+  # Cleaning column names to make working with the dataset easier
+  clean_names() %>% 
+  # convert the period and county columns to their correct data type
+  mutate(
+    period = my(period),
+    county = as.factor(county)
+    ) %>% 
+  # remove duplicates rows if any
+  distinct()
+```
+
+# Exploratory analysis
+
+## Dataset Structure
+
+We have 1410 rows and 11 variables in the data as the ouput below shows. 
+```{r}
+# Structure
+cema %>% glimpse()
+```
+
+## Exploring Missingness
+The plot below shows the percentage of missing values in each variable in our dataset. Most values are missing in the variable `acute_malnutrition` (about 25%). Other variables with missing values are `stunted 0-<6 months`, `stunted 24-59 months`, and `stunted 6-23 months` with 1.35%, 0.99%, and 0.78% missingness respectively. You can hover over the plot to see these values.
+```{r fig.width=9}
+ggplotly(
+  p = cema_clean %>% 
+  gg_miss_var(show_pct = T)+
+  labs(title = "Percentage of Missing Values per Variable") + theme_bw()
+)
+```
+
+
+## Univariate Data EDA
+
+### Lets compute descriptive statistics to help determine the distribution of numerical variables. 
+
+We can see the variable `stunted_0_6_months` has a large positive skewness. For modeling reasons we should consider a log or sqrt transformation on this variable to follow the normal distribution. 
+```{r}
+cema_clean %>% describe()
+```
+
+We can take the above analysis further by grouping the data by county and computing the descriptive statistics. 
+```{r}
+cema_clean %>% 
+  group_by(county) %>% 
+  describe() %>% 
+  arrange(described_variables, desc(skewness))
+```
+
+### Visualization of normality of numerical variables
+We can see that all of the numeric variables in the dataset are positively skilled. We also see how the ditributions of these would look like when square root and log transformations are applied.
+```{r}
+cema_clean %>% 
+  plot_normality()
+```
+
+
+## EDA of bivariate data
+
+### Calculation of correlation coefficient
+
+The following is a correlation matrix show the association of the numeric variables in the dataset. All of them are positively correlated. 
+```{r fig.width=25}
+cema_clean %>% 
+  correlate() %>% 
+  plot()
+```
+## Analysis of Numeric variables over time
+
+Lastly, as part of our exploratory analysis, we can leverage the period column to explore how the numeric indicators are changing over time by county. We can do this by plotting each numeric indicator against time, for each county.
+In the chunk below we filter for rows where county is Embu and plot the total dewormed children over time. The plot shows a relatively constant trend with conspicuous hikes in every May and November of every year.  
+```{r}
+ggplotly(cema_clean %>% 
+  filter(county == "Embu County") %>% 
+  ggplot(aes(period, total_dewormed))+
+  geom_line()+
+  geom_point()+
+  labs(
+    title = "Total Dewormed Children Over Time", x = "Date", y = "Total Dewormed"
+  )+
+  theme_bw()
+)
+```
+
+
+Since we have several counties (47) in the data, visualizing all of them in one plot will be will create a visual hard to interpret. We can leverage some javascript to scale the faceting to all 47 counties and indicators. This will create an interactive display which one can search, sort, and filter for any indicator by county.  
+```{r eval=FALSE}
+cema_clean %>% 
+  mutate(county = str_remove(county, " County")) %>% 
+  pivot_longer(
+    3:last_col(), names_to = "indicator", values_to = "value"
+  ) %>% 
+  unite("analytic", county, indicator, sep = " - ") %>% 
+  group_by(analytic) %>% 
+  plot_time_series(
+    period, value, 
+    .interactive = F, .x_intercept = "Date", .y_lab = "Value",
+    .title = "General Trend by County and Indicator", 
+    .smooth = F
+    )+
+  geom_point()+
+  # facet by all groups in the pivoted data
+  facet_trelliscope(~ analytic, scales = "free", width = 1000, nrow = 3, ncol = 3, as_plotly = T, path = "./")
+```
+
+# Research Question
+
+**Is there any association between the occurrence of diarrhea cases in children under 5 years and the number of children dewormed in each county?**
+
+## Correlation between the occurrence of diarrhea cases and the number of children dewormed in each county
+
+In the code chunk below we first remove the unnecessary `county` string in the county column, then we filter out rows with missing values in the `diarrhoea_cases` and `total_dewormed` columns, as we need complete data to calculate the correlation.
+
+After that, we group the filtered data by county and calculate the correlation coefficient (Pearson correlation) between `diarrhoea_cases` and `total_dewormed` using the cor function.
+```{r fig.width= 12, fig.height=12}
+cema_clean %>% 
+  mutate(county = str_remove(county, " County")) %>% 
+  drop_na(diarrhoea_cases, total_dewormed) %>% 
+  group_by(county) %>%
+  summarize(correlation = cor(diarrhoea_cases, total_dewormed, use = "complete.obs")) %>% 
+  ggplot(aes(fct_reorder(county, correlation), correlation))+
+  geom_col(fill = "steelblue")+
+  coord_flip()+
+  theme_bw()+
+  labs(
+    title = "Association between the occurrence of diarrhea cases in children under 5 years and the number of \n children dewormed by county",
+    x = "County", y = "Correlation Coefficient"
+  )+
+  theme(
+    axis.text = element_text(face = "bold"),
+    plot.title = element_text(vjust = .5, size = 14, face = "bold", colour = "steelblue")
+  )
+```
+
+### Interpretation
+
+We see a correlation coefficient close to 1 (positive) in counties like Samburu, Busia, Kisii and Turkana. This suggests a strong positive association between Diarrhoea casess and the number of dewormed children in these counties. In other words, as the number of dewormed children increase in these counties, the number of diarrhea cases among children under 5 years will most likely increase. 
+
+We also observer a weak negative correlation coefficient in counties like Nyeri, Kakamega, Tharaka Nithi and Kitui. This suggests a weak negative association between Diarrhoea Cases and the number of dewormed children in these counties. This means as the number of dewormed children increase in these counties, the number of diarrhea cases among children under 5 years will most likely decrease. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
